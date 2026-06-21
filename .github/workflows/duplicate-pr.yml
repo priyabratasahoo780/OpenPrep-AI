@@ -70,6 +70,5 @@ jobs:
               owner, repo, issue_number: num,
               body: '## ⚠️ Possible Duplicate PR\n\nHey @' + pr.user.login +
                 '! Another open PR already targets the same linked issue(s):\n\n' + list +
-                '\n\nPlease check the original PR before proceeding. ' +
-                'If this is not a duplicate, a maintainer will remove the `duplicate-pr` label.',
+                '\n\nPlease check the original PR before proceeding.',
             });
