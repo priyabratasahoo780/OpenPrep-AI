@@ -2,7 +2,7 @@ name: Duplicate PR Detection
 
 on:
   pull_request_target:
-    types: [opened, reopened]
+    types: [opened]
 
 concurrency:
   group: duplicate-pr-${{ github.event.pull_request.number }}
@@ -10,11 +10,10 @@ concurrency:
 
 jobs:
   detect-duplicate-pr:
+    if: ${{ !endsWith(github.event.pull_request.user.login, '[bot]') }}
     runs-on: ubuntu-latest
-    if: ${{ github.event.pull_request.user.login != 'github-actions[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
     permissions:
       pull-requests: write
-      issues: write
     steps:
       - uses: actions/github-script@v7
         with:
@@ -23,6 +22,12 @@ jobs:
             const pr = context.payload.pull_request;
             const num = pr.number;
             const body = pr.body || '';
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number: num, per_page: 50 });
+            if (comments.some(c => c.user.login === 'github-actions[bot]' && c.body.includes('Possible Duplicate PR'))) {
+              console.log('Already flagged — skipping');
+              return;
+            }
 
             try {
               await github.rest.issues.getLabel({ owner, repo, name: 'duplicate-pr' });
@@ -39,7 +44,7 @@ jobs:
             const linked = [...new Set([...body.matchAll(pattern)].map(m => parseInt(m[1])))];
 
             if (linked.length === 0) {
-              console.log('PR #' + num + ' has no linked issues — skipping duplicate check');
+              console.log('PR #' + num + ' has no linked issues — skipping');
               return;
             }
 
@@ -62,7 +67,10 @@ jobs:
               return;
             }
 
-            await github.rest.issues.addLabels({ owner, repo, issue_number: num, labels: ['duplicate-pr'] });
+            const { data: existingLabels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number: num });
+            if (!existingLabels.some(l => l.name === 'duplicate-pr')) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: num, labels: ['duplicate-pr'] });
+            }
 
             const list = duplicates
               .map(d => '- PR #' + d.pr + ': **' + d.title + '** (also targets issue #' + d.issue + ')')
