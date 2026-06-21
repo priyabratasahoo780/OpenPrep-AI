@@ -1,0 +1,99 @@
+name: Duplicate Issue Detection
+
+on:
+  issues:
+    types: [opened]
+
+concurrency:
+  group: duplicate-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  detect-duplicate:
+    runs-on: ubuntu-latest
+    if: ${{ !endsWith(github.event.issue.user.login, '[bot]') }}
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const num = issue.number;
+            const title = (issue.title || '').toLowerCase().trim();
+            const body = (issue.body || '').toLowerCase();
+
+            const STOP_WORDS = new Set(['a','an','the','is','it','in','on','at','to','for',
+              'of','and','or','but','not','be','this','that','was','are','with','as','by',
+              'from','have','has','do','will','can','i','we','you','he','she','they','my',
+              'your','our','its','be','been','being','had','did','does','do','if','so']);
+
+            function tokenize(text) {
+              return text.toLowerCase()
+                .replace(/[^a-z0-9\s]/g, ' ')
+                .split(/\s+/)
+                .filter(w => w.length > 2 && !STOP_WORDS.has(w));
+            }
+
+            const titleTokens = new Set(tokenize(title));
+            const bodyTokens = new Set(tokenize(body.substring(0, 500)));
+
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: 'possible-duplicate' });
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({
+                  owner, repo, name: 'possible-duplicate', color: 'cfd3d7',
+                  description: 'Possibly a duplicate of an existing issue',
+                });
+              }
+            }
+
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', per_page: 100,
+            });
+
+            const duplicates = [];
+
+            for (const ex of existing) {
+              if (ex.number === num || ex.pull_request) continue;
+
+              const t = (ex.title || '').toLowerCase();
+              const tokens = new Set(tokenize(t));
+
+              let overlap = 0;
+              for (const w of titleTokens) { if (tokens.has(w)) overlap++; }
+
+              let bodyOverlap = 0;
+              for (const w of bodyTokens) { if (tokens.has(w)) bodyOverlap++; }
+
+              const titleScore = titleTokens.size > 0 ? (overlap / titleTokens.size) * 100 : 0;
+              const bodyScore = tokens.size > 0 ? (bodyOverlap / tokens.size) * 100 : 0;
+              const score = Math.max(titleScore, bodyScore);
+
+              if (score >= 60) {
+                duplicates.push({ number: ex.number, title: ex.title, score: Math.round(score) });
+              }
+            }
+
+            if (duplicates.length === 0) {
+              console.log('No duplicates found for issue #' + num);
+              return;
+            }
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number: num, labels: ['possible-duplicate'] });
+
+            const list = duplicates
+              .sort((a, b) => b.score - a.score)
+              .slice(0, 5)
+              .map(d => '- #' + d.number + ': **' + d.title + '** (' + d.score + '% similarity)')
+              .join('\n');
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: num,
+              body: '## 🔍 Possible Duplicate Detected\n\nHey @' + issue.user.login +
+                '! This issue may be similar to existing ones:\n\n' + list +
+                '\n\nPlease check these before proceeding. If this is a duplicate, close and continue in the original. ' +
+                'If not, a maintainer will remove the `possible-duplicate` label.',
+            });
